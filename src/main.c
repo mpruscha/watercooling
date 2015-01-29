@@ -57,8 +57,7 @@ the demo application is not unexpectedly resetting. */
 /* The number of coroutines to create. */
 #define mainNUM_FLASH_COROUTINES		( 3 )
 
-#define ucPwmMax 200
-#define ucPwmMin 10
+
 
 #define taskDelayPeriod                 3
 
@@ -83,7 +82,10 @@ void setup_usb(void);
 
 
 static uint16_t ucPwm = 0;
-static uint8_t ucUp = true;
+static uint8_t ucUp = 1;
+
+static uint16_t ucPwmMax = 200;
+static uint16_t ucPwmMin = 10;
 
 
 USB_ClassInfo_CDC_Device_t VirtualSerial_CDC_InterfaceR =
@@ -171,8 +173,8 @@ int main( void )
 
 	prvIncrementResetCount();
 
-	xTaskCreate( vLedPwm, ( const char * )"NAME", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL );
-	xTaskCreate( VirtualSerialTask, (const portCHAR *) "ViSeTask", configMINIMAL_STACK_SIZE, NULL, (ViSe_TASK_PRIORITY | portPRIVILEGE_BIT), NULL );
+	xTaskCreate( vLedPwm, ( const portCHAR * )"Ape", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL );
+	xTaskCreate( VirtualSerialTask, (const portCHAR *) "ViSeTask", configMINIMAL_STACK_SIZE, NULL, ViSe_TASK_PRIORITY, NULL );
 
 	vTaskStartScheduler();
 
@@ -210,7 +212,12 @@ static void vLedPwm( void *pvParameters  )
 
 		}
 
+        //CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "fan set. \n\r");
+
+		_delay_ms(10);
 		OCR4A = ucPwm;
+		portYIELD();
+
 
 	}
 }
@@ -228,7 +235,7 @@ unsigned char ucCount;
 
 void vApplicationIdleHook( void )
 {
-	vCoRoutineSchedule();
+//	vCoRoutineSchedule();
 }
 
 
