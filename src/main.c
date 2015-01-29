@@ -212,10 +212,6 @@ static void vLedPwm( void *pvParameters  )
 
 		OCR4A = ucPwm;
 
-//		vTaskDelay( mainCHECK_PERIOD );
-//		vTaskDelay( 5000 );
-
-
 	}
 }
 
