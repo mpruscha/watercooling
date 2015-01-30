@@ -22,6 +22,13 @@
 #include <avr/sleep.h>
 #include "iocompat.h" /* Note [1] */
 
+#include "onewire.h"
+#include "ds18x20.h"
+#include "temp_sensors.h"
+
+#define MAXSENSORS 5
+#define NEWLINESTR "\r\n"
+
 
 typedef enum state
 {
@@ -86,6 +93,10 @@ static uint8_t ucUp = 1;
 
 static uint16_t ucPwmMax = 200;
 static uint16_t ucPwmMin = 10;
+
+int BytesAvailable = 0;
+char buffer[100];
+char end_buffer[100];
 
 
 USB_ClassInfo_CDC_Device_t VirtualSerial_CDC_InterfaceR =
@@ -162,83 +173,6 @@ void setup_usb(void)
     USB_Init();
 }
 
-
-int main( void )
-{
-
-	/* Setup the LED's for output. */
-	ioinit();
-	setup_usb();
-    GlobalInterruptEnable();
-
-	prvIncrementResetCount();
-
-	xTaskCreate( vLedPwm, ( const portCHAR * )"Ape", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL );
-	xTaskCreate( VirtualSerialTask, (const portCHAR *) "ViSeTask", configMINIMAL_STACK_SIZE, NULL, ViSe_TASK_PRIORITY, NULL );
-
-	vTaskStartScheduler();
-
-
-	return 0;
-
-}
-
-static void vLedPwm( void *pvParameters  )
-{
-	/* change the PWM duty cycle to get a pulsing LED */
-
-	for(;;)
-	{
-		/* each cycle, increment or decrement the pwm duty cycle */
-		if(ucUp == true)
-		{
-			/* count up */
-			ucPwm++;
-			if(ucPwm >= ucPwmMax)
-			{
-				ucUp = false;
-			}
-
-		}
-		else if(ucUp == false)
-		{
-			/* count down */
-			ucPwm--;
-
-			if(ucPwm <= ucPwmMin)
-			{
-				ucUp = true;
-			}
-
-		}
-
-        //CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "fan set. \n\r");
-
-		_delay_ms(10);
-		OCR4A = ucPwm;
-		portYIELD();
-
-
-	}
-}
-
-
-static void prvIncrementResetCount( void )
-{
-unsigned char ucCount;
-
-	eeprom_read_block( &ucCount, mainRESET_COUNT_ADDRESS, sizeof( ucCount ) );
-	ucCount++;
-	eeprom_write_byte( mainRESET_COUNT_ADDRESS, ucCount );
-}
-/*-----------------------------------------------------------*/
-
-void vApplicationIdleHook( void )
-{
-//	vCoRoutineSchedule();
-}
-
-
 void ioinit(void) /* Note [6] */
 {
     /* Timer 1 is 10-bit PWM (8-bit PWM on some ATtinys). */
@@ -289,6 +223,301 @@ void ioinit(void) /* Note [6] */
 
 }
 
+
+void handle_input(char* input)
+{
+
+    if(state == START)
+    {
+        if (strcmp("set fan\r",input) == 0)
+        {
+            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "enter fan speed, 0...40 \n\r");
+
+            /* advance state machine */
+            state = SET_FAN;
+
+
+        }
+        else if(strcmp("set pump\r", input)==0)
+        {
+            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "enter pump speed, 0...35  \n\r");
+
+            /* advance state machine */
+            state = SET_PUMP;
+        }
+        else if(strcmp("set led\r", input)==0)
+        {
+            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "enter led brightness, 0...255  \n\r");
+
+            /* advance state machine */
+            state = SET_LED;
+        }
+        else if(strcmp("read temp\r", input)==0)
+        {
+            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "reading temp...  \n\r");
+
+            /* advance state machine */
+            state = READ_TEMP;
+        }
+        else
+        {
+            /* didnt understand string */
+            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "what was that??? \n\r");
+
+            /* dont change state */
+            state = START;
+        }
+    }
+    else if(state == SET_LED)
+    {
+        static uint16_t pwm;
+        char *garbage = NULL;
+        pwm = strtol(input, &garbage, 0);
+        OCR4A = pwm;
+
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "led set. \n\r");
+
+        /* go back to start */
+        state = START;
+    }
+    else if(state == SET_FAN)
+    {
+        static uint16_t pwm;
+        char *garbage = NULL;
+        pwm = strtol(input, &garbage, 0);
+        OCR1B = pwm;
+
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "fan set. \n\r");
+
+        /* go back to start */
+        state = START;
+    }
+    else if(state == SET_PUMP)
+    {
+        static uint16_t pwm;
+        char *garbage = NULL;
+        pwm = strtol(input, &garbage, 0);
+        OCR3A = pwm;
+
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "pump set. \n\r");
+
+        /* go back to start */
+        state = START;
+    }
+    else if(state == READ_TEMP)
+    {
+        uint8_t i;
+        int16_t decicelsius;
+        uint8_t error;
+        uint8_t id[OW_ROMCODE_SIZE];
+        uint8_t diff, nSensors;
+
+        char itoa_buffer[10];
+
+        ow_set_bus(&PIND,&PORTD,&DDRD,PD4);
+
+        ow_reset();
+
+        nSensors = 0;
+
+        nSensors = search_sensors();
+
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "Number of sensors found: ");
+        itoa(nSensors, itoa_buffer, 10);
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, itoa_buffer);
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "\n\r");
+
+        /* classify sensors */
+        for ( i = 0; i < nSensors; i++ ) {
+            if ( gSensorIDs[i][0] == DS18B20_FAMILY_CODE ) {
+                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "DS18B20 found " );
+            }
+
+            if ( DS18X20_get_power_status( &gSensorIDs[i][0] ) == DS18X20_POWER_PARASITE ) {
+                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "parasite\n\r" );
+            } else {
+                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "externally\n\r" );
+            }
+        }
+//        for ( i = nSensors; i > 0; i-- )
+//        {
+//            if ( DS18X20_start_meas( DS18X20_POWER_EXTERN,
+//                            &gSensorIDs[i-1][0] ) == DS18X20_OK )
+        if ( DS18X20_start_meas( DS18X20_POWER_EXTERN, NULL )
+            == DS18X20_OK)
+        {
+            _delay_ms(DS18B20_TCONV_12BIT);
+
+            for ( i = 0; i < nSensors; i++ )
+            {
+
+                if ( DS18X20_read_decicelsius( &gSensorIDs[i][0], &decicelsius)
+                     == DS18X20_OK )
+                {
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "temp: ");
+                    itoa(decicelsius, itoa_buffer,10);
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, itoa_buffer);
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "\n\r ");
+                }
+
+                int32_t temp_eminus4;
+                if ( DS18X20_read_maxres( &gSensorIDs[i][0], &temp_eminus4 )
+                     == DS18X20_OK )
+                {
+                    DS18X20_format_from_maxres( temp_eminus4, itoa_buffer, 10 );
+
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "temp max res: ");
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, itoa_buffer);
+                    CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "\n\r ");
+
+                }
+
+            }
+
+        }
+
+
+        /* go back to start */
+        state = START;
+
+    }
+    else
+    {
+        CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "went into unknown state!? \n\r");
+
+        state = START;
+
+    }
+
+
+}
+
+
+
+static void vLedPwm( void *pvParameters  )
+{
+	/* change the PWM duty cycle to get a pulsing LED */
+	 TickType_t xLastWakeTime;
+	 const TickType_t xFrequency = 100;
+
+	 // Initialise the xLastWakeTime variable with the current time.
+	 xLastWakeTime = xTaskGetTickCount();
+
+	for(;;)
+	{
+		/* each cycle, increment or decrement the pwm duty cycle */
+		if(ucUp == true)
+		{
+			/* count up */
+			ucPwm = ucPwm + 30;
+			if(ucPwm >= ucPwmMax)
+			{
+				ucUp = false;
+			}
+
+		}
+		else if(ucUp == false)
+		{
+			/* count down */
+			ucPwm = ucPwm - 20;
+
+			if(ucPwm <= ucPwmMin)
+			{
+				ucUp = true;
+			}
+
+		}
+
+		OCR4A = ucPwm;
+
+        vTaskDelayUntil( &xLastWakeTime, xFrequency );
+
+	}
+}
+
+
+static void vUserInput ( void )
+{
+	TickType_t xLastWakeTime;
+	const TickType_t xFrequency = 100;
+
+	// Initialise the xLastWakeTime variable with the current time.
+	xLastWakeTime = xTaskGetTickCount();
+
+    for (;;)
+    {
+
+        int count = 0;
+        buffer[0] = 0;
+    	vTaskSuspendAll();
+        BytesAvailable = CDC_Device_BytesReceived (&VirtualSerial_CDC_InterfaceR);
+        for (count=0; count < BytesAvailable; count++) {
+          buffer[count] = CDC_Device_ReceiveByte (&VirtualSerial_CDC_InterfaceR);
+        }
+		xTaskResumeAll();
+
+
+        /* Null terminate buffer*/
+        buffer[count] = 0;
+
+        /* Buffer is not empty, print it */
+        if ( buffer[0] != 0 )
+        {
+        	vTaskSuspendAll();
+    		CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "received something! \n\r");
+    		xTaskResumeAll();
+
+//        	CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "received something! \n\r");
+
+//            /* combine into buffer */
+//            strncat(end_buffer, buffer, 1);
+//
+////            CDC_Device_SendByte (&VirtualSerial_CDC_InterfaceR, '\r');
+//            CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, buffer);
+//
+//            if(buffer[0]=='\r')
+//            {
+//                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "\n\r");
+//                strncat(end_buffer, '\0', 1);
+//                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "\n\r");
+//                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, end_buffer);
+//
+////                handle_input(end_buffer);
+//
+//                end_buffer[0] = '\0';
+//
+//                CDC_Device_SendString (&VirtualSerial_CDC_InterfaceR, "enter command: ");
+//
+//            }
+//
+        }
+
+
+
+        vTaskDelayUntil( &xLastWakeTime, xFrequency );
+
+    }
+
+
+
+}
+
+static void prvIncrementResetCount( void )
+{
+unsigned char ucCount;
+
+	eeprom_read_block( &ucCount, mainRESET_COUNT_ADDRESS, sizeof( ucCount ) );
+	ucCount++;
+	eeprom_write_byte( mainRESET_COUNT_ADDRESS, ucCount );
+}
+/*-----------------------------------------------------------*/
+
+void vApplicationIdleHook( void )
+{
+//	vCoRoutineSchedule();
+}
+
+
 static void VirtualSerialTask(void *pvParameters)
 {
 
@@ -311,4 +540,30 @@ static void VirtualSerialTask(void *pvParameters)
         }
 
 }
+
+
+int main( void )
+{
+
+	/* Setup the LED's for output. */
+	ioinit();
+	setup_usb();
+    GlobalInterruptEnable();
+
+	prvIncrementResetCount();
+
+	xTaskCreate( VirtualSerialTask, (const portCHAR *) "ViSeTask", configMINIMAL_STACK_SIZE, NULL, ViSe_TASK_PRIORITY, NULL );
+
+	xTaskCreate( vLedPwm, ( const portCHAR * )"Ape", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL );
+	xTaskCreate( vUserInput , ( const portCHAR * )"ui", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, NULL );
+
+
+	vTaskStartScheduler();
+
+
+	return 0;
+
+}
+
+
 

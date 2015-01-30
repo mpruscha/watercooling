@@ -7,15 +7,10 @@
 
 #include "onewire.h"
 #include "ds18x20.h"
-
-#define MAXSENSORS 5
-#define NEWLINESTR "\r\n"
+#include "temp_sensors.h"
 
 
-uint8_t gSensorIDs[MAXSENSORS][OW_ROMCODE_SIZE];
-
-
-static uint8_t search_sensors(void)
+uint8_t search_sensors(void)
 {
     uint8_t i;
     uint8_t id[OW_ROMCODE_SIZE];
