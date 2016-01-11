@@ -212,23 +212,10 @@ void measure_temp(uint8_t nSensors, int32_t* temp_eminus4)
 
         for (i = 0; i < nSensors; i++)
         {
-//            vTaskSuspendAll();
-//            result = DS18X20_read_decicelsius(&gSensorIDs[i][0], &decicelsius);
-//            xTaskResumeAll();
 
-//            if ( result == DS18X20_OK)
-//            {
-//
-//            }
             vTaskSuspendAll();
             result = DS18X20_read_maxres(&gSensorIDs[i][0], &temp_eminus4[i]);
             xTaskResumeAll();
-
-//            if (result == DS18X20_OK)
-//            {
-//
-//
-//            }
 
         }
 
@@ -474,11 +461,6 @@ static void vUserInput(void)
             if (buffer[0] == '\r')
             {
                 strncat(end_buffer, '\0', 1);
-
-//                vTaskSuspendAll();
-//                CDC_Device_SendString(&USB_Interface, end_buffer);
-//                CDC_Device_SendString(&USB_Interface, "\n\r");
-//                xTaskResumeAll();
 
                 handle_input(end_buffer);
 
